@@ -1,0 +1,4 @@
+__pycache__/
+*.pyc
+opus-mt-en-es-ct2/
+.env
