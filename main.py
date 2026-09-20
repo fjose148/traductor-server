@@ -12,7 +12,7 @@ log = logging.getLogger("translator_server")
 app = FastAPI(
     title="Webtoon Manhwa Translation Cloud API",
     description="API REST ultrarrápida y ligera para traducción de Manhwas en tiempo real con panel de inspección",
-    version="2.3.0"
+    version="2.4.0"
 )
 
 app.add_middleware(
@@ -41,7 +41,8 @@ def init_translation_engine():
     if not os.path.exists(CT2_DIR):
         raise FileNotFoundError(f"Directorio de modelo pre-convertido no encontrado: {CT2_DIR}")
 
-    translator_model = ctranslate2.Translator(CT2_DIR, device="cpu", compute_type="int8")
+    # compute_type int8 y 1 hilo para Render Free Tier
+    translator_model = ctranslate2.Translator(CT2_DIR, device="cpu", compute_type="int8", inter_threads=1, intra_threads=1)
     tokenizer = transformers.MarianTokenizer.from_pretrained(MODEL_NAME)
     log.info("Motor de traducción CTranslate2 listo (Consumo de RAM < 90MB).")
 
@@ -103,7 +104,6 @@ def health_check():
 
 @app.get("/logs")
 def get_logs():
-    """Devuelve las últimas 30 traducciones recibidas desde el celular en tiempo real."""
     return {
         "count": len(history_logs),
         "recent_requests": list(reversed(history_logs[-30:]))
@@ -112,7 +112,6 @@ def get_logs():
 
 @app.get("/last")
 def get_last_translation():
-    """Devuelve la última traducción enviada por el móvil."""
     if not history_logs:
         return {"status": "waiting", "message": "Aún no se han recibido peticiones desde el móvil"}
     return history_logs[-1]
@@ -129,8 +128,9 @@ async def translate_endpoint(req: TranslationRequest):
     to_translate_tokens = []
 
     for idx, text in enumerate(req.texts):
-        cleaned = text.strip()
-        if not cleaned:
+        # Truncar a máximo 280 caracteres para garantizar respuestas en < 200ms en Render
+        cleaned = text.strip()[:280]
+        if not cleaned or len(cleaned) < 2:
             results[idx] = ""
             continue
 
@@ -141,11 +141,17 @@ async def translate_endpoint(req: TranslationRequest):
             results[idx] = translation_cache[cache_key]
         else:
             to_translate_indices.append((idx, cache_key))
-            tokens = tokenizer.convert_ids_to_tokens(tokenizer.encode(normalized))
+            # Limitar a máximo 60 tokens por viñeta
+            tokens = tokenizer.convert_ids_to_tokens(tokenizer.encode(normalized)[:60])
             to_translate_tokens.append(tokens)
 
     if to_translate_tokens and translator_model is not None:
-        ct2_results = translator_model.translate_batch(to_translate_tokens)
+        # beam_size=1 es 4x más rápido y no satura la CPU en Render Free
+        ct2_results = translator_model.translate_batch(
+            to_translate_tokens,
+            max_decoding_length=80,
+            beam_size=1
+        )
         for (original_idx, cache_key), res in zip(to_translate_indices, ct2_results):
             target_tokens = res.hypotheses[0]
             translated_str = tokenizer.decode(tokenizer.convert_tokens_to_ids(target_tokens))
@@ -154,16 +160,15 @@ async def translate_endpoint(req: TranslationRequest):
 
     elapsed = (time.time() - start_t) * 1000
 
-    # Registrar en historial en memoria para que podamos inspeccionar las peticiones en vivo
     entry = {
         "id": len(history_logs) + 1,
         "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
-        "received_texts": req.texts,
+        "received_texts": [t[:100] for t in req.texts],
         "translations": results,
         "process_time_ms": round(elapsed, 2)
     }
     history_logs.append(entry)
-    if len(history_logs) > 100:
+    if len(history_logs) > 50:
         history_logs.pop(0)
 
     return TranslationResponse(translations=results, process_time_ms=round(elapsed, 2))
