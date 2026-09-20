@@ -1,7 +1,7 @@
 import os
 import time
 import logging
-from typing import List
+from typing import List, Dict, Any
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
@@ -11,8 +11,8 @@ log = logging.getLogger("translator_server")
 
 app = FastAPI(
     title="Webtoon Manhwa Translation Cloud API",
-    description="API REST ultrarrápida y ligera para traducción de Manhwas en tiempo real",
-    version="2.2.0"
+    description="API REST ultrarrápida y ligera para traducción de Manhwas en tiempo real con panel de inspección",
+    version="2.3.0"
 )
 
 app.add_middleware(
@@ -26,6 +26,7 @@ app.add_middleware(
 translator_model = None
 tokenizer = None
 translation_cache = {}
+history_logs: List[Dict[str, Any]] = []
 
 MODEL_NAME = "Helsinki-NLP/opus-mt-en-es"
 CT2_DIR = os.path.join(os.path.dirname(__file__), "opus-mt-en-es-ct2")
@@ -89,13 +90,32 @@ def read_root():
         "service": "Webtoon Translation Cloud API",
         "backend": "CTranslate2 INT8 (Lightweight)",
         "ram_usage": "< 90 MB",
-        "model": MODEL_NAME
+        "model": MODEL_NAME,
+        "total_translations_logged": len(history_logs),
+        "last_activity": history_logs[-1] if history_logs else "Sin peticiones aún"
     }
 
 
 @app.get("/health")
 def health_check():
     return {"status": "ok", "timestamp": time.time()}
+
+
+@app.get("/logs")
+def get_logs():
+    """Devuelve las últimas 30 traducciones recibidas desde el celular en tiempo real."""
+    return {
+        "count": len(history_logs),
+        "recent_requests": list(reversed(history_logs[-30:]))
+    }
+
+
+@app.get("/last")
+def get_last_translation():
+    """Devuelve la última traducción enviada por el móvil."""
+    if not history_logs:
+        return {"status": "waiting", "message": "Aún no se han recibido peticiones desde el móvil"}
+    return history_logs[-1]
 
 
 @app.post("/translate", response_model=TranslationResponse)
@@ -133,6 +153,19 @@ async def translate_endpoint(req: TranslationRequest):
             results[original_idx] = translated_str
 
     elapsed = (time.time() - start_t) * 1000
+
+    # Registrar en historial en memoria para que podamos inspeccionar las peticiones en vivo
+    entry = {
+        "id": len(history_logs) + 1,
+        "timestamp": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "received_texts": req.texts,
+        "translations": results,
+        "process_time_ms": round(elapsed, 2)
+    }
+    history_logs.append(entry)
+    if len(history_logs) > 100:
+        history_logs.pop(0)
+
     return TranslationResponse(translations=results, process_time_ms=round(elapsed, 2))
 
 
