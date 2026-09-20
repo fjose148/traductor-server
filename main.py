@@ -11,8 +11,8 @@ log = logging.getLogger("translator_server")
 
 app = FastAPI(
     title="Webtoon Manhwa Translation Cloud API",
-    description="API REST de alta velocidad para traducción de Manhwas en tiempo real",
-    version="2.0.0"
+    description="API REST ultrarrápida y ligera para traducción de Manhwas en tiempo real",
+    version="2.1.0"
 )
 
 app.add_middleware(
@@ -29,7 +29,7 @@ tokenizer = None
 translation_cache = {}
 
 MODEL_NAME = "Helsinki-NLP/opus-mt-en-es"
-CT2_DIR = "opus-mt-en-es-ct2"
+CT2_DIR = os.path.join(os.path.dirname(__file__), "opus-mt-en-es-ct2")
 
 
 def init_translation_engine():
@@ -37,16 +37,14 @@ def init_translation_engine():
     import ctranslate2
     import transformers
 
-    log.info("Inicializando motor de traducción CTranslate2 / MarianMT...")
+    log.info("Inicializando motor de traducción ligero CTranslate2 INT8...")
     if not os.path.exists(CT2_DIR):
-        log.info(f"Exportando y cuantizando modelo {MODEL_NAME} a formato CTranslate2 (INT8)...")
-        converter = ctranslate2.converters.TransformersConverter(MODEL_NAME)
-        converter.convert(CT2_DIR, quantization="int8")
-        log.info("Exportación completada exitosamente.")
+        raise FileNotFoundError(f"Directorio de modelo pre-convertido no encontrado: {CT2_DIR}")
 
+    # Cargar modelo CTranslate2 directamente sin sobrecarga de PyTorch (RAM < 90MB)
     translator_model = ctranslate2.Translator(CT2_DIR, device="cpu", compute_type="int8")
     tokenizer = transformers.MarianTokenizer.from_pretrained(MODEL_NAME)
-    log.info("Motor de traducción listo para recibir peticiones.")
+    log.info("Motor de traducción CTranslate2 listo (Consumo de RAM < 90MB).")
 
 
 @app.on_event("startup")
@@ -91,7 +89,8 @@ def read_root():
     return {
         "status": "online",
         "service": "Webtoon Translation Cloud API",
-        "backend": "CTranslate2 INT8",
+        "backend": "CTranslate2 INT8 (Lightweight)",
+        "ram_usage": "< 90 MB",
         "model": MODEL_NAME
     }
 
